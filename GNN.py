@@ -6,7 +6,10 @@ from sklearn.metrics import roc_auc_score, f1_score, precision_score, recall_sco
 from torch_geometric.utils import train_test_split_edges
 import torch
 import argparse
-
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix, roc_curve, auc
+import seaborn as sns
 
 class GAE(torch.nn.Module):
     def __init__(self, gnn_version):
@@ -14,39 +17,41 @@ class GAE(torch.nn.Module):
 
         self.gnn_version = gnn_version
 
-        self.linear1 = torch.nn.Linear(data.num_features, 32)  # First linear layer
-        self.linear2 = torch.nn.Linear(32, 64)  # Second linear layer
-        self.linear3 = torch.nn.Linear(64, 256)  # Second linear layer
+        self.linear1 = torch.nn.Linear(data.num_features, 64)
+        self.linear2 = torch.nn.Linear(64, 256)
+        self.linear3 = torch.nn.Linear(256, 1024)
 
         if gnn_version == 'gcn':
-            self.conv = GCN(in_channels=256, hidden_channels=64,out_channels=64, num_layers=2)
+            self.conv = GCN(in_channels=1024, hidden_channels=512,out_channels=256, num_layers=2)
         elif gnn_version == 'sage':
-            self.conv = GraphSAGE(in_channels=256, hidden_channels=64,out_channels=64, num_layers=2)
+            self.conv = GraphSAGE(in_channels=1024, hidden_channels=512,out_channels=256, num_layers=2)
         elif gnn_version == 'gat':
-            self.conv = GAT(in_channels=256, hidden_channels=64,out_channels=64, num_layers=2)
+            self.conv = GAT(in_channels=1024, hidden_channels=512,out_channels=64, num_layers=2)
         else:
             raise ValueError("Wrong GNN type")
-        self.linear4 = torch.nn.Linear(64, 64)  # Third linear layer
-        self.tanh = torch.nn.Tanh()  # Activation function
+
+        self.linear4 = torch.nn.Linear(256, 64)
+        self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
 
     def encode(self):
-        x = self.linear1(data.x.float())  # First linear layer
-        x = self.tanh(x)  # Activation function
-        x = self.linear2(x)  # Second linear layer
-        x = self.tanh(x)  # Activation function
+        x = self.linear1(data.x.float())
+        x = self.tanh(x)
+        x = self.linear2(x)
+        x = self.tanh(x)
         x = self.linear3(x)
         x = self.tanh(x)
-        x = self.conv(x, data.train_pos_edge_index)  # convolution 1
+        x = self.conv(x, data.train_pos_edge_index)
         x = self.linear4(x)
 
         return x
 
     def decode(self, z, pos_edge_index, neg_edge_index):  # Get the positive and negative edges
-        # z contains the embeddings for all the nodes. Shape: (1842,2)
-        # pos_edge_index = data.train_pos_edge_index. It contains ALL the training positive edges. shape: (2,8760)
+        # z contains the embeddings for all the nodes.
+        # pos_edge_index = data.train_pos_edge_index. It contains ALL the training positive edges.
         # neg_edge_index = It contains a sample of negative edges. SAME shape
         edge_index = torch.cat([pos_edge_index, neg_edge_index], dim=-1)  # concatenate positive and negative edges
-        # edge_index, shape: (2,17520). It contains the positive (true) train edges and the negative (sampled) ones. START to END
+        # . It contains the positive (true) train edges and the negative (sampled) ones. START to END
         # edge_index[0] -> starting nodes of the links (mixed positive and negative edges)
         # edge_index[1] -> ending nodes of the links (mixed positive and negative edges)
 
@@ -125,6 +130,35 @@ def evaluate(mode=None):
     recall = recall_score(link_labels.cpu(), link_predictions)
     f1 = f1_score(link_labels.cpu(), link_predictions)
     roc_auc = roc_auc_score(link_labels.cpu(), link_predictions)
+
+    if mode == 'test':
+        # Calculate the confusion matrix
+        cm = confusion_matrix(link_labels.cpu(), link_predictions)
+
+        # Plot the confusion matrix
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
+        plt.title("Confusion Matrix")
+        plt.xlabel("Predicted Label")
+        plt.ylabel("True Label")
+        plt.show()
+
+        # Calculate the false positive rate and true positive rate for ROC curve
+        fpr, tpr, _ = roc_curve(link_labels.cpu(), link_predictions)
+
+        # Calculate the AUC score
+        roc_auc = auc(fpr, tpr)
+
+        # Plot the ROC curve
+        plt.figure(figsize=(8, 6))
+        plt.plot(fpr, tpr, label=f"AUC = {roc_auc:.2f}")
+        plt.plot([0, 1], [0, 1], linestyle="--", color="gray", label="Baseline (AUC = 0.5)")
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.title("ROC Curve")
+        plt.legend()
+        plt.show()
+
     return precision, recall, f1, roc_auc
 
 
@@ -149,15 +183,17 @@ if __name__ == '__main__':
     print(f"Number of node features: {loaded_data.x.size(1)}")
 
     data = train_test_split_edges(loaded_data)
-
-    print(f"Training set size : {data.train_pos_edge_index.size(1)}")
-    print(f"Validation set size : {data.val_pos_edge_index.size(1)}")
-    print(f"Test set size : {data.test_pos_edge_index.size(1)}\n")
+    print(f"Training set size : {data.train_pos_edge_index.size(1) * 2} edges")
+    print(f"Validation set size : {data.val_pos_edge_index.size(1) * 2} edges")
+    print(f"Test set size : {data.test_pos_edge_index.size(1) * 2} edges\n")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
     model, data = GAE(gnn_version).to(device), data.to(device)
+
+    print(model)
+
 
     print(
         f"The model has {sum(p.numel() for p in model.parameters() if p.requires_grad)} trainable parameters\n")
@@ -165,13 +201,13 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(params=model.parameters(), lr=0.001)
 
     best_f1_perf = 0
-    for epoch in range(1, 50):
+    for epoch in range(1, 1000):
         train_loss = train()
         precision, recall, f1, roc_auc = evaluate(mode="val")
         if f1 > best_f1_perf:
             best_val_perf = f1
-        log = 'Epoch: {:03d}, Train Loss: {:.4f}, Val f1: {:.4f}'
-        if epoch % 5 == 0:
+        log = 'Batch/Epoch/Step: {:03d}, Train Loss: {:.4f}, Val f1: {:.4f}'
+        if epoch % 100 == 0:
             print(log.format(epoch, train_loss, best_val_perf))
 
     # precision, recall, f1, roc_auc = evaluate(mode="train")
