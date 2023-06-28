@@ -26,7 +26,7 @@ class GAE(torch.nn.Module):
         elif gnn_version == 'sage':
             self.conv = GraphSAGE(in_channels=1024, hidden_channels=512,out_channels=256, num_layers=2)
         elif gnn_version == 'gat':
-            self.conv = GAT(in_channels=1024, hidden_channels=512,out_channels=64, num_layers=2)
+            self.conv = GAT(in_channels=1024, hidden_channels=512,out_channels=256, num_layers=2)
         else:
             raise ValueError("Wrong GNN type")
 
